@@ -162,18 +162,18 @@ try {
                     throw new Exception('Cuadrante no encontrado');
                 }
 
-                // Buscar personas de baja con sustituciones en el rango de fechas
+                // Buscar personas de baja en el rango de fechas
                 $stmt = $db->prepare("
                     SELECT DISTINCT p.id, p.nombre
                     FROM personas p
                     INNER JOIN asignaciones a_orig ON a_orig.persona_id = p.id
-                    INNER JOIN asignaciones a_sust ON a_sust.sustituye_a = a_orig.id
                     WHERE a_orig.cuadrante_id = ?
                     AND a_orig.fecha >= ?
+                    AND a_orig.es_sustitucion = 0
                     AND p.fecha_baja IS NOT NULL
-                    AND a_sust.es_sustitucion = 1
+                    AND p.fecha_baja <= ?
                 ");
-                $stmt->execute([$cuadranteId, $lunesDesde]);
+                $stmt->execute([$cuadranteId, $lunesDesde, $cuadrante['fecha_fin']]);
                 $personasDeBaja = $stmt->fetchAll();
 
                 if (empty($personasDeBaja)) {
@@ -184,39 +184,71 @@ try {
                 $personaBaja = $personasDeBaja[0];
                 $personaBajaId = $personaBaja['id'];
 
-                // Transferir asignaciones: cambiar persona_id de las asignaciones originales
+                // Obtener TODAS las asignaciones originales de la persona de baja desde la fecha
                 $stmt = $db->prepare("
-                    UPDATE asignaciones
-                    SET persona_id = ?
+                    SELECT id FROM asignaciones
                     WHERE persona_id = ?
                     AND cuadrante_id = ?
                     AND fecha >= ?
                     AND es_sustitucion = 0
                 ");
-                $stmt->execute([$personaId, $personaBajaId, $cuadranteId, $lunesDesde]);
-                $asignacionesTransferidas = $stmt->rowCount();
+                $stmt->execute([$personaBajaId, $cuadranteId, $lunesDesde]);
+                $asignacionesOriginales = $stmt->fetchAll();
 
-                // Eliminar todas las sustituciones de esa persona desde la fecha
-                $stmt = $db->prepare("
-                    DELETE asig_sust
-                    FROM asignaciones asig_sust
-                    INNER JOIN asignaciones asig_orig ON asig_sust.sustituye_a = asig_orig.id
-                    WHERE asig_orig.persona_id = ?
-                    AND asig_orig.cuadrante_id = ?
-                    AND asig_orig.fecha >= ?
-                    AND asig_sust.es_sustitucion = 1
-                ");
-                $stmt->execute([$personaId, $cuadranteId, $lunesDesde]);
-                $sustitucionesEliminadas = $stmt->rowCount();
+                $sustitucionesCreadas = 0;
+                $sustitucionesActualizadas = 0;
+
+                // Para cada asignación original, crear/actualizar sustitución
+                foreach ($asignacionesOriginales as $asigOrig) {
+                    // Verificar si ya existe una sustitución
+                    $stmt = $db->prepare("
+                        SELECT id FROM asignaciones
+                        WHERE sustituye_a = ?
+                        AND es_sustitucion = 1
+                    ");
+                    $stmt->execute([$asigOrig['id']]);
+                    $sustExistente = $stmt->fetch();
+
+                    if ($sustExistente) {
+                        // ACTUALIZAR sustitución existente con la nueva persona
+                        $stmt = $db->prepare("
+                            UPDATE asignaciones
+                            SET persona_id = ?
+                            WHERE id = ?
+                        ");
+                        $stmt->execute([$personaId, $sustExistente['id']]);
+                        $sustitucionesActualizadas++;
+                    } else {
+                        // CREAR nueva sustitución
+                        // Obtener datos de la asignación original
+                        $stmt = $db->prepare("SELECT * FROM asignaciones WHERE id = ?");
+                        $stmt->execute([$asigOrig['id']]);
+                        $asigOriginal = $stmt->fetch();
+
+                        $stmt = $db->prepare("
+                            INSERT INTO asignaciones (cuadrante_id, persona_id, fecha, turno, puesto, es_sustitucion, sustituye_a)
+                            VALUES (?, ?, ?, ?, ?, 1, ?)
+                        ");
+                        $stmt->execute([
+                            $asigOriginal['cuadrante_id'],
+                            $personaId,
+                            $asigOriginal['fecha'],
+                            $asigOriginal['turno'],
+                            $asigOriginal['puesto'],
+                            $asigOrig['id']
+                        ]);
+                        $sustitucionesCreadas++;
+                    }
+                }
 
                 $db->commit();
 
                 jsonResponse([
                     'success' => true,
-                    'message' => "{$persona['nombre']} ha cubierto la baja de {$personaBaja['nombre']}. Se transfirieron $asignacionesTransferidas asignaciones y se eliminaron $sustitucionesEliminadas sustituciones.",
+                    'message' => "{$persona['nombre']} ahora cubre la baja de {$personaBaja['nombre']}. Se crearon $sustitucionesCreadas sustituciones y se actualizaron $sustitucionesActualizadas. La persona de baja seguirá visible en el cuadrante.",
                     'modo' => 'cubrir_baja',
-                    'asignaciones_transferidas' => $asignacionesTransferidas,
-                    'sustituciones_eliminadas' => $sustitucionesEliminadas
+                    'sustituciones_creadas' => $sustitucionesCreadas,
+                    'sustituciones_actualizadas' => $sustitucionesActualizadas
                 ]);
             }
 
