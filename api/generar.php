@@ -46,8 +46,8 @@ if (count($personas) > 11) {
 $soloMañanas = array_filter($personas, fn($p) => !$p['puede_rotar']);
 $rotan = array_filter($personas, fn($p) => $p['puede_rotar']);
 
-if (count($rotan) < 1) {
-    jsonResponse(['success' => false, 'message' => 'Se necesita al menos 1 persona que pueda rotar para cubrir tardes'], 400);
+if (count($rotan) < 2) {
+    jsonResponse(['success' => false, 'message' => 'Se necesitan al menos 2 personas que puedan rotar para cubrir tardes (mínimo requerido)'], 400);
 }
 
 // Obtener histórico de turnos de tarde de las últimas 2 semanas
@@ -158,28 +158,45 @@ for ($semana = 0; $semana < $numSemanas; $semana++) {
     $lunesSemana = $fechaActual->format('Y-m-d');
 
     // ===== PASO 1: DETERMINAR CUÁNTAS PERSONAS VAN A CADA TURNO =====
-    // REGLA: Llenar MAÑANA primero (máximo 6), resto a TARDE (máximo 5)
+    // REGLA: Maximizar mañanas para rotadores, pero SIEMPRE mínimo 2 de tarde
 
-    $totalPersonas = count($personas);
-    $numPersonasMañana = min($totalPersonas, 6); // Máximo 6 de mañana
-    $numPersonasTarde = $totalPersonas - $numPersonasMañana; // El resto a tarde
+    $numSoloMañanas = count($soloMañanas);
+    $numRotadores = count($rotan);
+
+    // VALIDAR: Mínimo 2 rotadores para cubrir tarde
+    if ($numRotadores < 2) {
+        jsonResponse([
+            'success' => false,
+            'message' => 'Se necesitan al menos 2 personas que puedan rotar para cubrir tardes. Solo hay ' . $numRotadores
+        ], 400);
+    }
+
+    // 1. Solo-mañanas van SIEMPRE a mañana
+    $personasEnMañana = $numSoloMañanas;
+
+    // 2. Calcular espacios libres en mañana (máximo 6 totales)
+    $espaciosLibresMañana = 6 - $personasEnMañana;
+
+    // 3. Calcular rotadores disponibles para mañana (reservar mínimo 2 para tarde)
+    $rotadoresDisponiblesParaMañana = $numRotadores - 2;
+
+    // 4. Rotadores que van a mañana = mínimo entre espacios libres y disponibles
+    $rotadoresEnMañana = min($espaciosLibresMañana, max(0, $rotadoresDisponiblesParaMañana));
+
+    // 5. El resto de rotadores van a tarde
+    $numPersonasTarde = $numRotadores - $rotadoresEnMañana;
 
     // VALIDAR: Máximo 5 de tarde
     if ($numPersonasTarde > 5) {
         jsonResponse([
             'success' => false,
-            'message' => 'Hay ' . $totalPersonas . ' personas activas. Se necesitan ' . $numPersonasMañana . ' de mañana, pero sobran ' . ($numPersonasTarde - 5) . ' para tarde. Máximo 5 de tarde permitidas.'
+            'message' => 'Hay ' . $numRotadores . ' rotadores. Con solo ' . $numSoloMañanas . ' de solo-mañanas, quedan ' . $numPersonasTarde . ' para tarde (máximo 5 permitido).'
         ], 400);
     }
 
-    // VALIDAR: Mínimo 2 de tarde (o al menos 1 con advertencia)
+    // ADVERTIR: Si solo hay 1 de tarde (permitido pero no recomendado)
     if ($numPersonasTarde == 1) {
         $advertencias[] = "⚠️ Semana " . ($semana + 1) . " (" . date('d/m/Y', strtotime($lunesSemana)) . "): Solo hay 1 persona de tarde (mínimo recomendado: 2)";
-    } elseif ($numPersonasTarde == 0) {
-        jsonResponse([
-            'success' => false,
-            'message' => 'No hay suficientes personas para cubrir tardes en la semana ' . ($semana + 1) . '. Se necesita al menos 1 persona que pueda rotar.'
-        ], 400);
     }
 
     // ===== PASO 2: SELECCIONAR PERSONAS PARA TARDE =====

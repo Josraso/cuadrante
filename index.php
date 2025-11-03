@@ -94,11 +94,12 @@
                         <strong>Información:</strong>
                         <ul>
                             <li>El sistema asignará automáticamente los turnos respetando todas las restricciones</li>
-                            <li>Turno MAÑANA: Se llena primero (máximo 6 puestos: 1 Lavado + 5 Pulido)</li>
-                            <li>Turno TARDE: El resto de personal (máximo 5 puestos de Pulido, NO hay lavado)</li>
-                            <li>Mínimo 2 personas de tarde (se permite 1 con advertencia)</li>
+                            <li><strong>Solo-mañanas:</strong> Van SIEMPRE a turno de mañana</li>
+                            <li><strong>Rotadores:</strong> Se maximiza su presencia en mañana, pero reservando SIEMPRE mínimo 2 para tarde</li>
+                            <li>Turno MAÑANA: Máximo 6 puestos (1 Lavado + 5 Pulido)</li>
+                            <li>Turno TARDE: Mínimo 2, máximo 5 puestos (solo Pulido, NO hay lavado)</li>
                             <li>Se evita que alguien tenga 2 semanas seguidas de tarde o lavado (permitido si es inevitable)</li>
-                            <li>Máximo 11 personas activas (6 mañana + 5 tarde)</li>
+                            <li>Mínimo: 4 personas (2 solo-mañanas + 2 rotadores) | Máximo: 11 personas</li>
                         </ul>
                     </div>
 
