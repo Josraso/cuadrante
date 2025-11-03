@@ -194,8 +194,11 @@ function renderizarTablaPersonas(filtro = null) {
     }
     // 'todos' no filtra nada
 
-    personasFiltradas.forEach(persona => {
+    personasFiltradas.forEach((persona, index) => {
         const tr = document.createElement('tr');
+
+        // Número correlativo (empezando desde 1)
+        const numeroCorrelativo = index + 1;
 
         // Estado de baja
         const estaDeBaja = persona.fecha_baja !== null;
@@ -259,6 +262,7 @@ function renderizarTablaPersonas(filtro = null) {
         }
 
         tr.innerHTML = `
+            <td style="text-align: center; color: #667eea; font-weight: bold;">${numeroCorrelativo}</td>
             <td><strong>${persona.nombre}</strong></td>
             <td>
                 <span class="badge ${persona.puede_rotar ? 'badge-yes' : 'badge-no'}">

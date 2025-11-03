@@ -139,6 +139,7 @@
             <table id="tabla-personas" class="data-table">
                 <thead>
                     <tr>
+                        <th>#</th>
                         <th>Nombre</th>
                         <th>¿Puede Rotar?</th>
                         <th>¿Puede Lavar?</th>

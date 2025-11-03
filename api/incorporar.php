@@ -182,64 +182,180 @@ try {
                     throw new Exception('No se encontraron personas de baja para cubrir');
                 }
 
-                // Tomar la primera persona de baja (o podríamos pedir al usuario que elija)
+                // Tomar la primera persona de baja
                 $personaBaja = $personasDeBaja[0];
                 $personaBajaId = $personaBaja['id'];
 
+                // Obtener todos los rotadores activos (incluyendo el que se incorpora)
+                $stmt = $db->prepare("
+                    SELECT * FROM personas
+                    WHERE activo = 1
+                    AND puede_rotar = 1
+                    AND id != ?
+                    AND (fecha_baja IS NULL OR fecha_baja > ?)
+                    ORDER BY nombre
+                ");
+                $stmt->execute([$personaBajaId, $fechaIncorporacion]);
+                $rotadoresDisponibles = $stmt->fetchAll();
+
+                if (empty($rotadoresDisponibles)) {
+                    throw new Exception('No hay rotadores disponibles para cubrir la baja');
+                }
+
+                // Obtener contador de tardes de cada rotador ANTES de la fecha de incorporación
+                $contadorTardesRotadores = [];
+                foreach ($rotadoresDisponibles as $rot) {
+                    $stmt = $db->prepare("
+                        SELECT COUNT(DISTINCT DATE(fecha)) as total
+                        FROM asignaciones
+                        WHERE cuadrante_id = ?
+                        AND persona_id = ?
+                        AND turno = 'tarde'
+                        AND fecha < ?
+                        AND es_sustitucion = 0
+                    ");
+                    $stmt->execute([$cuadranteId, $rot['id'], $fechaIncorporacion]);
+                    $result = $stmt->fetch();
+                    $contadorTardesRotadores[$rot['id']] = (int)$result['total'];
+                }
+
                 // Obtener TODAS las asignaciones originales de la persona de baja desde la fecha
                 $stmt = $db->prepare("
-                    SELECT id FROM asignaciones
+                    SELECT * FROM asignaciones
                     WHERE persona_id = ?
                     AND cuadrante_id = ?
                     AND fecha >= ?
                     AND es_sustitucion = 0
+                    ORDER BY fecha, turno
                 ");
                 $stmt->execute([$personaBajaId, $cuadranteId, $fechaIncorporacion]);
                 $asignacionesOriginales = $stmt->fetchAll();
 
+                // Agrupar asignaciones por semana y turno para distribución equitativa
+                $asignacionesPorSemana = [];
+                foreach ($asignacionesOriginales as $asig) {
+                    $lunes = getLunes($asig['fecha']);
+                    if (!isset($asignacionesPorSemana[$lunes])) {
+                        $asignacionesPorSemana[$lunes] = ['mañana' => [], 'tarde' => []];
+                    }
+                    $asignacionesPorSemana[$lunes][$asig['turno']][] = $asig;
+                }
+
                 $sustitucionesCreadas = 0;
                 $sustitucionesActualizadas = 0;
 
-                // Para cada asignación original, crear/actualizar sustitución
-                foreach ($asignacionesOriginales as $asigOrig) {
-                    // Verificar si ya existe una sustitución
-                    $stmt = $db->prepare("
-                        SELECT id FROM asignaciones
-                        WHERE sustituye_a = ?
-                        AND es_sustitucion = 1
-                    ");
-                    $stmt->execute([$asigOrig['id']]);
-                    $sustExistente = $stmt->fetch();
+                // Para cada semana, distribuir las tardes entre los rotadores
+                foreach ($asignacionesPorSemana as $lunes => $turnos) {
+                    // TARDES: Distribuir entre TODOS los rotadores de forma equitativa
+                    if (!empty($turnos['tarde'])) {
+                        // Ordenar rotadores por menor cantidad de tardes
+                        uasort($rotadoresDisponibles, function($a, $b) use ($contadorTardesRotadores) {
+                            return $contadorTardesRotadores[$a['id']] <=> $contadorTardesRotadores[$b['id']];
+                        });
 
-                    if ($sustExistente) {
-                        // ACTUALIZAR sustitución existente con la nueva persona
-                        $stmt = $db->prepare("
-                            UPDATE asignaciones
-                            SET persona_id = ?
-                            WHERE id = ?
-                        ");
-                        $stmt->execute([$personaId, $sustExistente['id']]);
-                        $sustitucionesActualizadas++;
-                    } else {
-                        // CREAR nueva sustitución
-                        // Obtener datos de la asignación original
-                        $stmt = $db->prepare("SELECT * FROM asignaciones WHERE id = ?");
-                        $stmt->execute([$asigOrig['id']]);
-                        $asigOriginal = $stmt->fetch();
+                        // Calcular cuántas tardes necesitamos cubrir en esta semana
+                        $tardesSemana = count($turnos['tarde']);
+                        $rotadoresArray = array_values($rotadoresDisponibles);
+                        $numRotadores = count($rotadoresArray);
 
-                        $stmt = $db->prepare("
-                            INSERT INTO asignaciones (cuadrante_id, persona_id, fecha, turno, puesto, es_sustitucion, sustituye_a)
-                            VALUES (?, ?, ?, ?, ?, 1, ?)
-                        ");
-                        $stmt->execute([
-                            $asigOriginal['cuadrante_id'],
-                            $personaId,
-                            $asigOriginal['fecha'],
-                            $asigOriginal['turno'],
-                            $asigOriginal['puesto'],
-                            $asigOrig['id']
-                        ]);
-                        $sustitucionesCreadas++;
+                        // Asignar cada día de tarde a un rotador diferente
+                        $fechasTarde = [];
+                        foreach ($turnos['tarde'] as $asig) {
+                            $fechasTarde[$asig['fecha']] = true;
+                        }
+                        $fechasTarde = array_keys($fechasTarde);
+
+                        // Distribuir cada día de tarde entre rotadores
+                        $indiceRotador = 0;
+                        foreach ($fechasTarde as $fecha) {
+                            // Obtener todas las asignaciones de tarde de este día
+                            $asignacionesDia = array_filter($turnos['tarde'], fn($a) => $a['fecha'] === $fecha);
+
+                            // Seleccionar el rotador con menos tardes
+                            $rotadorSeleccionado = $rotadoresArray[$indiceRotador % $numRotadores];
+
+                            // Crear/actualizar sustituciones para todas las asignaciones de este día
+                            foreach ($asignacionesDia as $asig) {
+                                // Verificar si ya existe una sustitución
+                                $stmt = $db->prepare("
+                                    SELECT id FROM asignaciones
+                                    WHERE sustituye_a = ?
+                                    AND es_sustitucion = 1
+                                ");
+                                $stmt->execute([$asig['id']]);
+                                $sustExistente = $stmt->fetch();
+
+                                if ($sustExistente) {
+                                    // ACTUALIZAR sustitución existente
+                                    $stmt = $db->prepare("
+                                        UPDATE asignaciones
+                                        SET persona_id = ?
+                                        WHERE id = ?
+                                    ");
+                                    $stmt->execute([$rotadorSeleccionado['id'], $sustExistente['id']]);
+                                    $sustitucionesActualizadas++;
+                                } else {
+                                    // CREAR nueva sustitución
+                                    $stmt = $db->prepare("
+                                        INSERT INTO asignaciones (cuadrante_id, persona_id, fecha, turno, puesto, es_sustitucion, sustituye_a)
+                                        VALUES (?, ?, ?, ?, ?, 1, ?)
+                                    ");
+                                    $stmt->execute([
+                                        $asig['cuadrante_id'],
+                                        $rotadorSeleccionado['id'],
+                                        $asig['fecha'],
+                                        $asig['turno'],
+                                        $asig['puesto'],
+                                        $asig['id']
+                                    ]);
+                                    $sustitucionesCreadas++;
+                                }
+                            }
+
+                            // Incrementar contador de tardes para este rotador
+                            $contadorTardesRotadores[$rotadorSeleccionado['id']]++;
+                            $indiceRotador++;
+                        }
+                    }
+
+                    // MAÑANAS: Asignar a la persona que se incorpora
+                    if (!empty($turnos['mañana'])) {
+                        foreach ($turnos['mañana'] as $asig) {
+                            // Verificar si ya existe una sustitución
+                            $stmt = $db->prepare("
+                                SELECT id FROM asignaciones
+                                WHERE sustituye_a = ?
+                                AND es_sustitucion = 1
+                            ");
+                            $stmt->execute([$asig['id']]);
+                            $sustExistente = $stmt->fetch();
+
+                            if ($sustExistente) {
+                                // ACTUALIZAR sustitución existente
+                                $stmt = $db->prepare("
+                                    UPDATE asignaciones
+                                    SET persona_id = ?
+                                    WHERE id = ?
+                                ");
+                                $stmt->execute([$personaId, $sustExistente['id']]);
+                                $sustitucionesActualizadas++;
+                            } else {
+                                // CREAR nueva sustitución
+                                $stmt = $db->prepare("
+                                    INSERT INTO asignaciones (cuadrante_id, persona_id, fecha, turno, puesto, es_sustitucion, sustituye_a)
+                                    VALUES (?, ?, ?, ?, ?, 1, ?)
+                                ");
+                                $stmt->execute([
+                                    $asig['cuadrante_id'],
+                                    $personaId,
+                                    $asig['fecha'],
+                                    $asig['turno'],
+                                    $asig['puesto'],
+                                    $asig['id']
+                                ]);
+                                $sustitucionesCreadas++;
+                            }
+                        }
                     }
                 }
 
@@ -247,7 +363,7 @@ try {
 
                 jsonResponse([
                     'success' => true,
-                    'message' => "{$persona['nombre']} ahora cubre la baja de {$personaBaja['nombre']}. Se crearon $sustitucionesCreadas sustituciones y se actualizaron $sustitucionesActualizadas. La persona de baja seguirá visible en el cuadrante.",
+                    'message' => "Baja de {$personaBaja['nombre']} cubierta correctamente. Las mañanas las cubre {$persona['nombre']}, las tardes se han repartido entre " . count($rotadoresDisponibles) . " rotadores. Se crearon $sustitucionesCreadas sustituciones y se actualizaron $sustitucionesActualizadas.",
                     'modo' => 'cubrir_baja',
                     'sustituciones_creadas' => $sustitucionesCreadas,
                     'sustituciones_actualizadas' => $sustitucionesActualizadas

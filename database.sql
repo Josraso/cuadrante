@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS personas (
     nombre VARCHAR(100) NOT NULL,
     puede_rotar BOOLEAN DEFAULT 1 COMMENT '1=Puede rotar turnos, 0=Solo mañanas',
     puede_lavar BOOLEAN DEFAULT 1 COMMENT '1=Puede ir a Lavado, 0=No puede',
-    activo BOOLEAN DEFAULT 1,
+    activo BOOLEAN DEFAULT 0 COMMENT '0=Inactivo (recién creado), 1=Activo (incorporado a cuadrante)',
     fecha_baja DATE DEFAULT NULL COMMENT 'NULL=activo, Fecha=de baja desde esa fecha',
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY idx_nombre (nombre),

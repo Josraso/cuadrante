@@ -21,16 +21,16 @@ switch ($method) {
         }
         
         try {
-            $stmt = $db->prepare("INSERT INTO personas (nombre, puede_rotar, puede_lavar) VALUES (?, ?, ?)");
+            $stmt = $db->prepare("INSERT INTO personas (nombre, puede_rotar, puede_lavar, activo) VALUES (?, ?, ?, 0)");
             $stmt->execute([
                 $data['nombre'],
                 isset($data['puede_rotar']) ? (int)$data['puede_rotar'] : 1,
                 isset($data['puede_lavar']) ? (int)$data['puede_lavar'] : 1
             ]);
-            
+
             jsonResponse([
-                'success' => true, 
-                'message' => 'Persona creada correctamente',
+                'success' => true,
+                'message' => 'Persona creada correctamente como INACTIVA. Debes incorporarla al cuadrante para activarla.',
                 'id' => $db->lastInsertId()
             ]);
         } catch (PDOException $e) {
