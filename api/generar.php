@@ -24,7 +24,6 @@ $fechaFinObj->modify('+' . (($numSemanas * 7) - 1) . ' days');
 $fechaFin = $fechaFinObj->format('Y-m-d');
 
 // Obtener todas las personas activas que NO estén de baja
-// (fecha_baja IS NULL o fecha_baja > fecha_fin del cuadrante)
 $stmt = $db->prepare("
     SELECT * FROM personas
     WHERE activo = 1
@@ -35,22 +34,39 @@ $stmt->execute([$fechaFin]);
 $personas = $stmt->fetchAll();
 
 if (count($personas) < 4) {
-    jsonResponse(['success' => false, 'message' => 'Se necesitan al menos 4 personas para generar el cuadrante'], 400);
+    jsonResponse(['success' => false, 'message' => 'Se necesitan al menos 4 personas activas para generar el cuadrante'], 400);
+}
+
+// VALIDACIÓN: Máximo 11 personas activas (6 mañana + 5 tarde)
+if (count($personas) > 11) {
+    jsonResponse(['success' => false, 'message' => 'Hay ' . count($personas) . ' personas activas. Máximo permitido: 11 (6 mañana + 5 tarde)'], 400);
 }
 
 // Separar personas por tipo
 $soloMañanas = array_filter($personas, fn($p) => !$p['puede_rotar']);
 $rotan = array_filter($personas, fn($p) => $p['puede_rotar']);
 
-if (count($rotan) < 2) {
-    jsonResponse(['success' => false, 'message' => 'Se necesitan al menos 2 personas que puedan rotar para cubrir las tardes'], 400);
+if (count($rotan) < 1) {
+    jsonResponse(['success' => false, 'message' => 'Se necesita al menos 1 persona que pueda rotar para cubrir tardes'], 400);
 }
 
-// Obtener histórico de turnos de tarde de las últimas semanas
+// Obtener histórico de turnos de tarde de las últimas 2 semanas
+// IMPORTANTE: Considerar SUSTITUCIONES (quien realmente trabajó)
 $stmt = $db->prepare("
-    SELECT persona_id, fecha_inicio_semana
-    FROM historico_turnos
-    WHERE turno = 'tarde' AND fecha_inicio_semana >= DATE_SUB(?, INTERVAL 2 WEEK)
+    SELECT
+        COALESCE(sust.persona_id, orig.persona_id) as persona_id,
+        fecha_inicio_semana
+    FROM historico_turnos ht
+    LEFT JOIN asignaciones orig ON orig.persona_id = ht.persona_id
+        AND orig.fecha >= ht.fecha_inicio_semana
+        AND orig.fecha < DATE_ADD(ht.fecha_inicio_semana, INTERVAL 7 DAY)
+        AND orig.turno = 'tarde'
+        AND orig.es_sustitucion = 0
+    LEFT JOIN asignaciones sust ON sust.sustituye_a = orig.id
+        AND sust.es_sustitucion = 1
+    WHERE ht.turno = 'tarde'
+    AND ht.fecha_inicio_semana >= DATE_SUB(?, INTERVAL 2 WEEK)
+    GROUP BY COALESCE(sust.persona_id, orig.persona_id), fecha_inicio_semana
     ORDER BY fecha_inicio_semana DESC
 ");
 $stmt->execute([$fechaInicio]);
@@ -59,14 +75,28 @@ $historicoTardesArray = $stmt->fetchAll();
 // Agrupar histórico de tardes por persona
 $historicoTardes = [];
 foreach ($historicoTardesArray as $registro) {
-    $historicoTardes[$registro['persona_id']][] = $registro['fecha_inicio_semana'];
+    if ($registro['persona_id']) { // Asegurar que no sea NULL
+        $historicoTardes[$registro['persona_id']][] = $registro['fecha_inicio_semana'];
+    }
 }
 
-// Obtener histórico de lavado de las últimas semanas
+// Obtener histórico de lavado de las últimas 2 semanas
+// IMPORTANTE: Considerar SUSTITUCIONES (quien realmente trabajó)
 $stmt = $db->prepare("
-    SELECT persona_id, fecha_inicio_semana
-    FROM historico_turnos
-    WHERE turno = 'lavado' AND fecha_inicio_semana >= DATE_SUB(?, INTERVAL 2 WEEK)
+    SELECT
+        COALESCE(sust.persona_id, orig.persona_id) as persona_id,
+        fecha_inicio_semana
+    FROM historico_turnos ht
+    LEFT JOIN asignaciones orig ON orig.persona_id = ht.persona_id
+        AND orig.fecha >= ht.fecha_inicio_semana
+        AND orig.fecha < DATE_ADD(ht.fecha_inicio_semana, INTERVAL 7 DAY)
+        AND orig.puesto = 'lavado'
+        AND orig.es_sustitucion = 0
+    LEFT JOIN asignaciones sust ON sust.sustituye_a = orig.id
+        AND sust.es_sustitucion = 1
+    WHERE ht.turno = 'lavado'
+    AND ht.fecha_inicio_semana >= DATE_SUB(?, INTERVAL 2 WEEK)
+    GROUP BY COALESCE(sust.persona_id, orig.persona_id), fecha_inicio_semana
     ORDER BY fecha_inicio_semana DESC
 ");
 $stmt->execute([$fechaInicio]);
@@ -75,7 +105,9 @@ $historicoLavadoArray = $stmt->fetchAll();
 // Agrupar histórico de lavado por persona
 $historicoLavado = [];
 foreach ($historicoLavadoArray as $registro) {
-    $historicoLavado[$registro['persona_id']][] = $registro['fecha_inicio_semana'];
+    if ($registro['persona_id']) { // Asegurar que no sea NULL
+        $historicoLavado[$registro['persona_id']][] = $registro['fecha_inicio_semana'];
+    }
 }
 
 // Función para verificar si una persona tuvo tarde la semana anterior
@@ -107,7 +139,7 @@ $asignaciones = [];
 $fechaActual = clone $fechaInicioObj;
 $personasTardesPorSemana = []; // Registro de quién estuvo de tarde cada semana
 $personaLavadoPorSemana = []; // Registro de quién lavó cada semana
-$advertencias = []; // Advertencias sobre repeticiones consecutivas
+$advertencias = []; // Advertencias sobre repeticiones consecutivas o falta de personal
 
 // Contadores de turnos totales acumulados (para rotación equitativa)
 $contadorTardes = [];
@@ -125,25 +157,33 @@ foreach ($personas as $p) {
 for ($semana = 0; $semana < $numSemanas; $semana++) {
     $lunesSemana = $fechaActual->format('Y-m-d');
 
-    // ===== PASO 1: SELECCIONAR TARDE =====
-    // PUESTOS: Mañana 6 (1 lavado + 5 pulido) | Tarde 5 (5 pulido, NO se lava)
-    $totalPersonas = count($soloMañanas) + count($rotan);
+    // ===== PASO 1: DETERMINAR CUÁNTAS PERSONAS VAN A CADA TURNO =====
+    // REGLA: Llenar MAÑANA primero (máximo 6), resto a TARDE (máximo 5)
 
-    // Calcular: llenar primero mañana (max 6), resto a tarde (max 5)
-    if ($totalPersonas <= 6) {
-        // Si hay 6 o menos, mínimo 2 de tarde (requisito)
-        $numPersonasTarde = 2;
-    } else {
-        // Si hay más de 6, el exceso va de tarde
-        $numPersonasTarde = $totalPersonas - 6;
+    $totalPersonas = count($personas);
+    $numPersonasMañana = min($totalPersonas, 6); // Máximo 6 de mañana
+    $numPersonasTarde = $totalPersonas - $numPersonasMañana; // El resto a tarde
+
+    // VALIDAR: Máximo 5 de tarde
+    if ($numPersonasTarde > 5) {
+        jsonResponse([
+            'success' => false,
+            'message' => 'Hay ' . $totalPersonas . ' personas activas. Se necesitan ' . $numPersonasMañana . ' de mañana, pero sobran ' . ($numPersonasTarde - 5) . ' para tarde. Máximo 5 de tarde permitidas.'
+        ], 400);
     }
 
-    // Validar límites: mínimo 2, máximo 5 de tarde
-    $numPersonasTarde = max(2, $numPersonasTarde);
-    $numPersonasTarde = min(5, $numPersonasTarde);
+    // VALIDAR: Mínimo 2 de tarde (o al menos 1 con advertencia)
+    if ($numPersonasTarde == 1) {
+        $advertencias[] = "⚠️ Semana " . ($semana + 1) . " (" . date('d/m/Y', strtotime($lunesSemana)) . "): Solo hay 1 persona de tarde (mínimo recomendado: 2)";
+    } elseif ($numPersonasTarde == 0) {
+        jsonResponse([
+            'success' => false,
+            'message' => 'No hay suficientes personas para cubrir tardes en la semana ' . ($semana + 1) . '. Se necesita al menos 1 persona que pueda rotar.'
+        ], 400);
+    }
 
-    // No superar las que pueden rotar
-    $numPersonasTarde = min($numPersonasTarde, count($rotan));
+    // ===== PASO 2: SELECCIONAR PERSONAS PARA TARDE =====
+    // Solo pueden ir de tarde las que ROTAN
 
     // Filtrar candidatos que NO estuvieron de tarde semana anterior
     $candidatosTardesPreferidos = array_filter($rotan, function($p) use ($lunesSemana, $historicoTardes, $personasTardesPorSemana) {
@@ -198,7 +238,11 @@ for ($semana = 0; $semana < $numSemanas; $semana++) {
 
         $faltan = $numPersonasTarde - count($personasTardes);
         for ($i = 0; $i < $faltan && $i < count($candidatosFueron); $i++) {
-            $personasTardes[] = $candidatosFueron[$i];
+            $persona = $candidatosFueron[$i];
+            $personasTardes[] = $persona;
+
+            // ADVERTENCIA: Esta persona repite tarde consecutiva
+            $advertencias[] = "⚠️ " . $persona['nombre'] . " tiene 2 semanas consecutivas de tarde (semanas " . $semana . " y " . ($semana + 1) . ")";
         }
     }
 
@@ -208,13 +252,16 @@ for ($semana = 0; $semana < $numSemanas; $semana++) {
         $contadorTardes[$p['id']]++;
     }
 
-    // ===== PASO 2: SELECCIONAR LAVADO (de los que están de MAÑANA) =====
-    // Personas disponibles para mañana: solo-mañanas + rotatorios que NO están de tarde
+    // ===== PASO 3: ASIGNAR PERSONAS A MAÑANA =====
+    // Mañana: solo-mañanas + rotatorios que NO están de tarde
     $personasMañanaDisponibles = array_merge(
         $soloMañanas,
         array_filter($rotan, fn($p) => !in_array($p['id'], $personasTardesPorSemana[$lunesSemana]))
     );
 
+    $personasMañanaDisponibles = array_values($personasMañanaDisponibles);
+
+    // ===== PASO 4: SELECCIONAR LAVADO (de los que están de MAÑANA) =====
     // Filtrar los que pueden lavar
     $candidatosLavado = array_filter($personasMañanaDisponibles, fn($p) => $p['puede_lavar']);
 
@@ -225,20 +272,56 @@ for ($semana = 0; $semana < $numSemanas; $semana++) {
         ], 400);
     }
 
+    // Filtrar candidatos que NO lavaron semana anterior
+    $candidatosLavadoPreferidos = array_filter($candidatosLavado, function($p) use ($lunesSemana, $historicoLavado, $personaLavadoPorSemana) {
+        // Verificar histórico en BD
+        if (lavoSemanaAnterior($p['id'], $lunesSemana, $historicoLavado)) {
+            return false;
+        }
+
+        // Verificar en las semanas que estamos generando
+        $fechaObj = new DateTime($lunesSemana);
+        $fechaObj->modify('-7 days');
+        $semanaAnterior = $fechaObj->format('Y-m-d');
+
+        if (isset($personaLavadoPorSemana[$semanaAnterior]) &&
+            $personaLavadoPorSemana[$semanaAnterior] === $p['id']) {
+            return false;
+        }
+
+        return true;
+    });
+
+    $candidatosLavadoPreferidos = array_values($candidatosLavadoPreferidos);
+
     // Ordenar por contador (el que menos ha lavado)
-    $candidatosLavado = array_values($candidatosLavado);
-    usort($candidatosLavado, function($a, $b) use ($contadorLavado) {
+    usort($candidatosLavadoPreferidos, function($a, $b) use ($contadorLavado) {
         return $contadorLavado[$a['id']] <=> $contadorLavado[$b['id']];
     });
 
-    // Seleccionar el primero
-    $personaLavado = $candidatosLavado[0];
+    // Seleccionar persona para lavado
+    $personaLavado = null;
+
+    if (count($candidatosLavadoPreferidos) > 0) {
+        $personaLavado = $candidatosLavadoPreferidos[0];
+    } else {
+        // No hay nadie que NO lavó semana anterior - tomar el que menos ha lavado
+        $candidatosLavado = array_values($candidatosLavado);
+        usort($candidatosLavado, function($a, $b) use ($contadorLavado) {
+            return $contadorLavado[$a['id']] <=> $contadorLavado[$b['id']];
+        });
+
+        $personaLavado = $candidatosLavado[0];
+
+        // ADVERTENCIA: Esta persona repite lavado consecutivo
+        $advertencias[] = "⚠️ " . $personaLavado['nombre'] . " lava 2 semanas consecutivas (semanas " . $semana . " y " . ($semana + 1) . ")";
+    }
 
     // Registrar lavado
     $personaLavadoPorSemana[$lunesSemana] = $personaLavado['id'];
     $contadorLavado[$personaLavado['id']]++;
 
-    // ===== PASO 3: ASIGNAR DÍAS (lunes a viernes) =====
+    // ===== PASO 5: ASIGNAR DÍAS (lunes a viernes) =====
     for ($dia = 0; $dia < 5; $dia++) {
         $fecha = $fechaActual->format('Y-m-d');
 
@@ -248,64 +331,40 @@ for ($semana = 0; $semana < $numSemanas; $semana++) {
             'persona_id' => $personaLavado['id'],
             'fecha' => $fecha,
             'turno' => 'mañana',
-            'puesto' => 'lavado',
-            'es_consecutivo' => false // Lavado puede repetir si es necesario
+            'puesto' => 'lavado'
         ];
 
-        // Asignar PULIDOS (excluir persona de lavado y personas de tarde)
-        $personasMañana = array_merge(
-            $soloMañanas,
-            array_filter($rotan, fn($p) => !in_array($p['id'], $personasTardesPorSemana[$lunesSemana]))
-        );
-
-        // Excluir persona de lavado
-        $personasPulido = array_filter($personasMañana, fn($p) => $p['id'] !== $personaLavado['id']);
+        // Asignar PULIDOS (excluir persona de lavado)
+        $personasPulido = array_filter($personasMañanaDisponibles, fn($p) => $p['id'] !== $personaLavado['id']);
         $personasPulido = array_values($personasPulido);
 
-        // IMPORTANTE: Asignar TODOS los trabajadores disponibles en mañana
-        // No limitar a solo 5, sino incluir a TODOS
-        for ($i = 0; $i < count($personasPulido); $i++) {
-            // Generar nombre de puesto dinámicamente (pulido1, pulido2, ..., pulidoN)
+        // Asignar hasta 5 puestos de pulido en mañana
+        for ($i = 0; $i < min(count($personasPulido), 5); $i++) {
             $puesto = 'pulido' . ($i + 1);
 
             $asignaciones[] = [
                 'persona_id' => $personasPulido[$i]['id'],
                 'fecha' => $fecha,
                 'turno' => 'mañana',
-                'puesto' => $puesto,
-                'es_consecutivo' => false
+                'puesto' => $puesto
             ];
         }
 
-        // ===== TURNO DE TARDE (2 personas) =====
+        // ===== TURNO DE TARDE =====
         for ($i = 0; $i < count($personasTardes); $i++) {
-            $puesto = 'pulido' . ($i + 1); // pulido1, pulido2 para las 2 personas de tarde
-
-            // Verificar si ESTA persona específica repite consecutivo
-            $personaTardeId = $personasTardes[$i]['id'];
-            $esConsecutivo = false;
-
-            $fechaObj = new DateTime($lunesSemana);
-            $fechaObj->modify('-7 days');
-            $semanaAnterior = $fechaObj->format('Y-m-d');
-
-            if ((isset($personasTardesPorSemana[$semanaAnterior]) && in_array($personaTardeId, $personasTardesPorSemana[$semanaAnterior])) ||
-                tuvoTardeSemanaAnterior($personaTardeId, $lunesSemana, $historicoTardes)) {
-                $esConsecutivo = true;
-            }
+            $puesto = 'pulido' . ($i + 1);
 
             $asignaciones[] = [
-                'persona_id' => $personaTardeId,
+                'persona_id' => $personasTardes[$i]['id'],
                 'fecha' => $fecha,
                 'turno' => 'tarde',
-                'puesto' => $puesto,
-                'es_consecutivo' => $esConsecutivo
+                'puesto' => $puesto
             ];
         }
 
         $fechaActual->modify('+1 day');
     }
-    
+
     // Saltar fin de semana
     $fechaActual->modify('+2 days');
 }
@@ -313,20 +372,20 @@ for ($semana = 0; $semana < $numSemanas; $semana++) {
 // Guardar en BD
 try {
     $db->beginTransaction();
-    
+
     // Crear cuadrante
     $nombreCuadrante = "Cuadrante " . date('d/m/Y', strtotime($fechaInicio)) . " - " . date('d/m/Y', strtotime($fechaFin));
     $stmt = $db->prepare("INSERT INTO cuadrantes (nombre, fecha_inicio, fecha_fin, num_semanas) VALUES (?, ?, ?, ?)");
     $stmt->execute([$nombreCuadrante, $fechaInicio, $fechaFin, $numSemanas]);
-    
+
     $cuadranteId = $db->lastInsertId();
-    
+
     // Insertar asignaciones
     $stmt = $db->prepare("
-        INSERT INTO asignaciones (cuadrante_id, persona_id, fecha, turno, puesto) 
+        INSERT INTO asignaciones (cuadrante_id, persona_id, fecha, turno, puesto)
         VALUES (?, ?, ?, ?, ?)
     ");
-    
+
     foreach ($asignaciones as $asig) {
         $stmt->execute([
             $cuadranteId,
@@ -336,7 +395,7 @@ try {
             $asig['puesto']
         ]);
     }
-    
+
     // Actualizar histórico de turnos de tarde
     $stmt = $db->prepare("INSERT INTO historico_turnos (persona_id, fecha_inicio_semana, turno) VALUES (?, ?, ?)");
 
@@ -350,7 +409,7 @@ try {
     foreach ($personaLavadoPorSemana as $lunesSemana => $personaId) {
         $stmt->execute([$personaId, $lunesSemana, 'lavado']);
     }
-    
+
     $db->commit();
 
     $response = [
@@ -366,7 +425,7 @@ try {
     }
 
     jsonResponse($response);
-    
+
 } catch (Exception $e) {
     $db->rollBack();
     jsonResponse(['success' => false, 'message' => 'Error al generar: ' . $e->getMessage()], 500);

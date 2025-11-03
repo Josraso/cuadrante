@@ -315,34 +315,32 @@ try {
                     $contadorLavado[$row['persona_id']] = (int)$row['total'];
                 }
 
-                // 7. GENERAR SEMANAS
+                // 7. GENERAR SEMANAS (CON LÓGICA CORRECTA)
                 $asignacionesNuevas = [];
                 $fechaActual = new DateTime($lunesDesde);
                 $personasTardesPorSemana = [];
+                $personaLavadoPorSemana = [];
 
                 for ($semana = 0; $semana < $numSemanas; $semana++) {
                     $lunesSemana = $fechaActual->format('Y-m-d');
 
-                    // PASO 1: SELECCIONAR TARDE
-                    // PUESTOS: Mañana 6 (1 lavado + 5 pulido) | Tarde 5 (5 pulido, NO se lava)
-                    $totalPersonas = count($soloMañanas) + count($rotan);
+                    // PASO 1: DETERMINAR CUÁNTAS PERSONAS VAN A CADA TURNO
+                    // REGLA: Llenar MAÑANA primero (máximo 6), resto a TARDE (máximo 5)
+                    $totalPersonas = count($personasActivas);
+                    $numPersonasMañana = min($totalPersonas, 6); // Máximo 6 de mañana
+                    $numPersonasTarde = $totalPersonas - $numPersonasMañana; // El resto a tarde
 
-                    // Calcular: llenar primero mañana (max 6), resto a tarde (max 5)
-                    if ($totalPersonas <= 6) {
-                        // Si hay 6 o menos, mínimo 2 de tarde (requisito)
-                        $numPersonasTarde = 2;
-                    } else {
-                        // Si hay más de 6, el exceso va de tarde
-                        $numPersonasTarde = $totalPersonas - 6;
+                    // VALIDAR: Máximo 5 de tarde
+                    if ($numPersonasTarde > 5) {
+                        throw new Exception('Hay ' . $totalPersonas . ' personas activas. Máximo permitido: 11 (6 mañana + 5 tarde)');
                     }
 
-                    // Validar límites: mínimo 2, máximo 5 de tarde
-                    $numPersonasTarde = max(2, $numPersonasTarde);
-                    $numPersonasTarde = min(5, $numPersonasTarde);
+                    // VALIDAR: Mínimo 1 de tarde (permitir con advertencia)
+                    if ($numPersonasTarde == 0) {
+                        throw new Exception('No hay suficientes personas para cubrir tardes');
+                    }
 
-                    // No superar las que pueden rotar
-                    $numPersonasTarde = min($numPersonasTarde, count($rotan));
-
+                    // PASO 2: SELECCIONAR PERSONAS PARA TARDE (solo rotan)
                     $candidatosTarde = array_filter($rotan, function($p) use ($lunesSemana, $historicoTardes, $personasTardesPorSemana) {
                         // Verificar histórico
                         if (isset($historicoTardes[$p['id']])) {
@@ -368,9 +366,14 @@ try {
                         return $contadorTardes[$a['id']] <=> $contadorTardes[$b['id']];
                     });
 
-                    $personasTardes = array_slice($candidatosTarde, 0, $numPersonasTarde);
+                    // Tomar las personas necesarias para tarde
+                    $personasTardes = [];
+                    $numPreferidos = min(count($candidatosTarde), $numPersonasTarde);
+                    for ($i = 0; $i < $numPreferidos; $i++) {
+                        $personasTardes[] = $candidatosTarde[$i];
+                    }
 
-                    // Si faltan, completar con cualquiera
+                    // Si faltan más, completar con los que SÍ fueron (inevitable)
                     if (count($personasTardes) < $numPersonasTarde) {
                         $resto = array_filter($rotan, function($p) use ($personasTardes) {
                             foreach ($personasTardes as $pt) {
@@ -383,7 +386,9 @@ try {
                             return $contadorTardes[$a['id']] <=> $contadorTardes[$b['id']];
                         });
                         $faltan = $numPersonasTarde - count($personasTardes);
-                        $personasTardes = array_merge($personasTardes, array_slice($resto, 0, $faltan));
+                        for ($i = 0; $i < $faltan && $i < count($resto); $i++) {
+                            $personasTardes[] = $resto[$i];
+                        }
                     }
 
                     $personasTardesPorSemana[$lunesSemana] = array_column($personasTardes, 'id');
@@ -391,24 +396,35 @@ try {
                         $contadorTardes[$p['id']]++;
                     }
 
-                    // PASO 2: SELECCIONAR LAVADO
+                    // PASO 3: ASIGNAR PERSONAS A MAÑANA
+                    // Mañana: solo-mañanas + rotatorios que NO están de tarde
                     $personasMañana = array_merge(
                         $soloMañanas,
                         array_filter($rotan, fn($p) => !in_array($p['id'], $personasTardesPorSemana[$lunesSemana]))
                     );
+                    $personasMañana = array_values($personasMañana);
+
+                    // PASO 4: SELECCIONAR LAVADO (de los que están de MAÑANA)
                     $candidatosLavado = array_filter($personasMañana, fn($p) => $p['puede_lavar']);
+
+                    if (count($candidatosLavado) === 0) {
+                        throw new Exception('No hay personas disponibles para lavado en semana ' . ($semana + 1));
+                    }
+
                     $candidatosLavado = array_values($candidatosLavado);
                     usort($candidatosLavado, function($a, $b) use ($contadorLavado) {
                         return $contadorLavado[$a['id']] <=> $contadorLavado[$b['id']];
                     });
+
                     $personaLavado = $candidatosLavado[0];
+                    $personaLavadoPorSemana[$lunesSemana] = $personaLavado['id'];
                     $contadorLavado[$personaLavado['id']]++;
 
-                    // PASO 3: ASIGNAR DÍAS
+                    // PASO 5: ASIGNAR DÍAS (lunes a viernes)
                     for ($dia = 0; $dia < 5; $dia++) {
                         $fecha = $fechaActual->format('Y-m-d');
 
-                        // MAÑANA - Lavado
+                        // TURNO DE MAÑANA - Lavado
                         $asignacionesNuevas[] = [
                             'persona_id' => $personaLavado['id'],
                             'fecha' => $fecha,
@@ -416,10 +432,10 @@ try {
                             'puesto' => 'lavado'
                         ];
 
-                        // MAÑANA - Pulidos
+                        // TURNO DE MAÑANA - Pulidos (excluir lavado, máximo 5)
                         $personasPulido = array_filter($personasMañana, fn($p) => $p['id'] !== $personaLavado['id']);
                         $personasPulido = array_values($personasPulido);
-                        for ($i = 0; $i < count($personasPulido); $i++) {
+                        for ($i = 0; $i < min(count($personasPulido), 5); $i++) {
                             $asignacionesNuevas[] = [
                                 'persona_id' => $personasPulido[$i]['id'],
                                 'fecha' => $fecha,
@@ -428,7 +444,7 @@ try {
                             ];
                         }
 
-                        // TARDE
+                        // TURNO DE TARDE - Pulidos
                         for ($i = 0; $i < count($personasTardes); $i++) {
                             $asignacionesNuevas[] = [
                                 'persona_id' => $personasTardes[$i]['id'],

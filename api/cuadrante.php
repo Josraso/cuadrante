@@ -105,15 +105,59 @@ switch ($method) {
     case 'PUT':
         // Actualizar asignación individual
         $data = json_decode(file_get_contents('php://input'), true);
-        
+
         if (empty($data['id'])) {
             jsonResponse(['success' => false, 'message' => 'ID de asignación requerido'], 400);
         }
-        
+
         try {
+            // Obtener asignación actual
+            $stmt = $db->prepare("SELECT * FROM asignaciones WHERE id = ?");
+            $stmt->execute([$data['id']]);
+            $asignacion = $stmt->fetch();
+
+            if (!$asignacion) {
+                jsonResponse(['success' => false, 'message' => 'Asignación no encontrada'], 404);
+            }
+
+            // Obtener datos de la nueva persona
+            $stmt = $db->prepare("SELECT * FROM personas WHERE id = ?");
+            $stmt->execute([$data['persona_id']]);
+            $persona = $stmt->fetch();
+
+            if (!$persona) {
+                jsonResponse(['success' => false, 'message' => 'Persona no encontrada'], 404);
+            }
+
+            // VALIDAR: Persona debe estar activa
+            if ($persona['activo'] == 0) {
+                jsonResponse(['success' => false, 'message' => 'No se puede asignar a ' . $persona['nombre'] . ' porque está inactiva'], 400);
+            }
+
+            // VALIDAR: Persona no debe estar de baja en esa fecha
+            if ($persona['fecha_baja'] !== null && $asignacion['fecha'] >= $persona['fecha_baja']) {
+                jsonResponse(['success' => false, 'message' => 'No se puede asignar a ' . $persona['nombre'] . ' porque está de baja desde ' . date('d/m/Y', strtotime($persona['fecha_baja']))], 400);
+            }
+
+            // VALIDAR: Si es turno de TARDE, la persona debe poder rotar
+            if ($asignacion['turno'] === 'tarde' && $persona['puede_rotar'] == 0) {
+                jsonResponse(['success' => false, 'message' => $persona['nombre'] . ' no puede ir de tarde porque solo trabaja en turno de mañana'], 400);
+            }
+
+            // VALIDAR: Si el puesto es LAVADO, la persona debe poder lavar
+            if ($data['puesto'] === 'lavado' && $persona['puede_lavar'] == 0) {
+                jsonResponse(['success' => false, 'message' => $persona['nombre'] . ' no puede ir al puesto de lavado'], 400);
+            }
+
+            // VALIDAR: LAVADO solo puede estar en turno de MAÑANA
+            if ($data['puesto'] === 'lavado' && $asignacion['turno'] === 'tarde') {
+                jsonResponse(['success' => false, 'message' => 'El puesto de lavado solo existe en turno de mañana'], 400);
+            }
+
+            // Todo OK - Actualizar
             $stmt = $db->prepare("
-                UPDATE asignaciones 
-                SET persona_id = ?, puesto = ?, editado_manualmente = 1 
+                UPDATE asignaciones
+                SET persona_id = ?, puesto = ?, editado_manualmente = 1
                 WHERE id = ?
             ");
             $stmt->execute([
@@ -121,8 +165,8 @@ switch ($method) {
                 $data['puesto'],
                 $data['id']
             ]);
-            
-            jsonResponse(['success' => true, 'message' => 'Asignación actualizada']);
+
+            jsonResponse(['success' => true, 'message' => 'Asignación actualizada correctamente']);
         } catch (Exception $e) {
             jsonResponse(['success' => false, 'message' => 'Error: ' . $e->getMessage()], 500);
         }
