@@ -1800,30 +1800,55 @@ function mostrarAnalisisIncorporacion(data) {
         </div>
     `;
 
-    // Verificar si hay personas de baja con sustituciones
+    // SIEMPRE mostrar opciones de incorporación
+    html += `
+        <div style="background: #e7f3ff; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #2196F3;">
+            <h4 style="color: #0c5460; margin-bottom: 15px;">📋 ¿Cómo quieres incorporar a esta persona?</h4>
+            <div style="background: white; padding: 12px; border-radius: 5px; margin-bottom: 10px;">
+                <label style="display: flex; align-items: center; cursor: pointer; font-weight: 500;">
+                    <input type="radio" name="tipo-incorporacion" id="incorporar-normal" value="normal" checked style="width: 18px; height: 18px; margin-right: 10px; cursor: pointer;">
+                    <span>Incorporación normal (regenerar cuadrante)</span>
+                </label>
+            </div>
+            <div style="background: white; padding: 12px; border-radius: 5px;">
+                <label style="display: flex; align-items: center; cursor: pointer; font-weight: 500;">
+                    <input type="radio" name="tipo-incorporacion" id="incorporar-cubrir-baja" value="cubrir" style="width: 18px; height: 18px; margin-right: 10px; cursor: pointer;">
+                    <span>Cubrir la baja de otra persona</span>
+                </label>
+            </div>
+    `;
+
+    // Si hay personas de baja, mostrar selector
     if (data.personas_de_baja && data.personas_de_baja.length > 0) {
         html += `
-            <div style="background: #e7f3ff; padding: 15px; border-radius: 8px; margin-bottom: 15px; border-left: 4px solid #2196F3;">
-                <h4 style="color: #0c5460; margin-bottom: 10px;">🏥 Personas de baja detectadas:</h4>
-                <ul style="margin: 10px 0; padding-left: 20px; color: #0c5460;">
+            <div id="selector-persona-baja" style="display: none; margin-top: 15px; background: white; padding: 12px; border-radius: 5px;">
+                <label style="display: block; margin-bottom: 8px; font-weight: 500; color: #0c5460;">
+                    Selecciona la persona de baja a cubrir:
+                </label>
+                <select id="persona-baja-seleccionada" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 1em;">
+                    <option value="">-- Selecciona una persona --</option>
         `;
         data.personas_de_baja.forEach(p => {
-            html += `<li>${p.nombre} (baja desde ${formatearFecha(p.fecha_baja)})</li>`;
+            html += `<option value="${p.id}">${p.nombre} (baja desde ${formatearFecha(p.fecha_baja)})</option>`;
         });
         html += `
-                </ul>
-                <div style="background: white; padding: 12px; border-radius: 5px; margin-top: 10px;">
-                    <label style="display: flex; align-items: center; cursor: pointer; font-weight: 500;">
-                        <input type="checkbox" id="incorporar-cubrir-baja" style="width: 18px; height: 18px; margin-right: 10px; cursor: pointer;">
-                        <span>¿Incorporar para cubrir la baja?</span>
-                    </label>
-                    <div id="incorporar-explicacion" style="margin-top: 8px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 0.9em; color: #666;">
-                        <strong>No marcado:</strong> Se regenerarán todos los turnos incluyendo a ${data.persona.nombre}. Las sustituciones actuales continuarán hasta la fecha de incorporación.
-                    </div>
-                </div>
+                </select>
+            </div>
+        `;
+    } else {
+        html += `
+            <div id="selector-persona-baja" style="display: none; margin-top: 15px; background: #fff3cd; padding: 12px; border-radius: 5px;">
+                <p style="color: #856404; margin: 0;">⚠️ No hay personas de baja actualmente en este cuadrante.</p>
             </div>
         `;
     }
+
+    html += `
+            <div id="incorporar-explicacion" style="margin-top: 12px; padding: 10px; background: #d4edda; border-radius: 4px; font-size: 0.9em; color: #155724;">
+                <strong>Incorporación normal:</strong> Se regenerarán todos los turnos incluyendo a ${data.persona.nombre}. Se distribuirán equitativamente entre todos.
+            </div>
+        </div>
+    `;
 
     if (data.semanas_mantenidas.length > 0) {
         html += `
@@ -1865,22 +1890,34 @@ function mostrarAnalisisIncorporacion(data) {
 
     content.innerHTML = html;
 
-    // Agregar evento para cambiar explicación
-    const checkbox = document.getElementById('incorporar-cubrir-baja');
-    if (checkbox) {
-        checkbox.addEventListener('change', function() {
-            const explicacion = document.getElementById('incorporar-explicacion');
-            if (this.checked) {
-                explicacion.innerHTML = `<strong>Marcado:</strong> ${data.persona.nombre} adoptará el horario de la persona de baja. Se eliminarán las sustituciones y el resto volverá a sus turnos originales.`;
-                explicacion.style.background = '#d4edda';
-                explicacion.style.color = '#155724';
-            } else {
-                explicacion.innerHTML = `<strong>No marcado:</strong> Se regenerarán todos los turnos incluyendo a ${data.persona.nombre}. Las sustituciones actuales continuarán hasta la fecha de incorporación.`;
-                explicacion.style.background = '#f8f9fa';
-                explicacion.style.color = '#666';
+    // Agregar eventos para cambiar entre opciones
+    const radioNormal = document.getElementById('incorporar-normal');
+    const radioCubrir = document.getElementById('incorporar-cubrir-baja');
+    const selectorPersonaBaja = document.getElementById('selector-persona-baja');
+    const explicacion = document.getElementById('incorporar-explicacion');
+
+    function actualizarInterfaz() {
+        if (radioCubrir.checked) {
+            // Mostrar selector de persona de baja
+            if (selectorPersonaBaja) {
+                selectorPersonaBaja.style.display = 'block';
             }
-        });
+            explicacion.innerHTML = `<strong>Cubrir baja:</strong> ${data.persona.nombre} cubrirá las mañanas, las tardes se repartirán entre los rotadores disponibles. La persona de baja seguirá visible en el cuadrante.`;
+            explicacion.style.background = '#fff3cd';
+            explicacion.style.color = '#856404';
+        } else {
+            // Ocultar selector de persona de baja
+            if (selectorPersonaBaja) {
+                selectorPersonaBaja.style.display = 'none';
+            }
+            explicacion.innerHTML = `<strong>Incorporación normal:</strong> Se regenerarán todos los turnos incluyendo a ${data.persona.nombre}. Se distribuirán equitativamente entre todos.`;
+            explicacion.style.background = '#d4edda';
+            explicacion.style.color = '#155724';
+        }
     }
+
+    if (radioNormal) radioNormal.addEventListener('change', actualizarInterfaz);
+    if (radioCubrir) radioCubrir.addEventListener('change', actualizarInterfaz);
 
     // Mostrar step 2
     document.getElementById('incorporar-step1').style.display = 'none';
@@ -1888,12 +1925,28 @@ function mostrarAnalisisIncorporacion(data) {
 }
 
 async function confirmarIncorporacion() {
-    // Leer si se está cubriendo baja
-    const checkbox = document.getElementById('incorporar-cubrir-baja');
-    const cubrirBaja = checkbox ? checkbox.checked : false;
+    // Leer tipo de incorporación seleccionado
+    const radioCubrir = document.getElementById('incorporar-cubrir-baja');
+    const cubrirBaja = radioCubrir ? radioCubrir.checked : false;
+
+    // Si está cubriendo baja, validar que se haya seleccionado una persona
+    let personaBajaId = null;
+    if (cubrirBaja) {
+        const selectorPersonaBaja = document.getElementById('persona-baja-seleccionada');
+        if (selectorPersonaBaja) {
+            personaBajaId = selectorPersonaBaja.value;
+            if (!personaBajaId) {
+                showToast('Debes seleccionar qué persona de baja quieres cubrir', 'warning');
+                return;
+            }
+        } else {
+            showToast('No hay personas de baja disponibles para cubrir', 'warning');
+            return;
+        }
+    }
 
     const mensaje = cubrirBaja
-        ? '¿Confirmas cubrir la baja?\n\nLa persona incorporada adoptará el horario de la persona de baja y se eliminarán las sustituciones.\n\nEsta acción NO se puede deshacer.'
+        ? '¿Confirmas cubrir la baja?\n\nLa persona incorporada cubrirá las mañanas, y las tardes se repartirán entre rotadores.\n\nEsta acción NO se puede deshacer.'
         : '¿Confirmas la regeneración del cuadrante?\n\nEsta acción NO se puede deshacer.';
 
     if (!confirm(mensaje)) {
@@ -1905,16 +1958,23 @@ async function confirmarIncorporacion() {
     document.getElementById('modal-incorporar').style.display = 'none';
 
     try {
+        const requestBody = {
+            persona_id: personaIncorporarId,
+            cuadrante_id: cuadranteIncorporarId,
+            fecha_desde: fechaIncorporarDesde,
+            accion: 'regenerar',
+            cubrir_baja: cubrirBaja
+        };
+
+        // Si está cubriendo baja, enviar el ID de la persona de baja
+        if (cubrirBaja && personaBajaId) {
+            requestBody.persona_baja_id = personaBajaId;
+        }
+
         const response = await fetch('api/incorporar.php', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                persona_id: personaIncorporarId,
-                cuadrante_id: cuadranteIncorporarId,
-                fecha_desde: fechaIncorporarDesde,
-                accion: 'regenerar',
-                cubrir_baja: cubrirBaja
-            })
+            body: JSON.stringify(requestBody)
         });
 
         const data = await response.json();

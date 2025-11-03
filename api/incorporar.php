@@ -107,18 +107,16 @@ try {
             $currentLunes = date('Y-m-d', strtotime($currentLunes . ' +7 days'));
         }
 
-        // Detectar si hay personas de baja con sustituciones en este cuadrante
+        // Detectar TODAS las personas de baja (tengan o no sustituciones)
         $stmt = $db->prepare("
             SELECT DISTINCT p.id, p.nombre, p.fecha_baja
             FROM personas p
-            INNER JOIN asignaciones a_orig ON a_orig.persona_id = p.id
-            INNER JOIN asignaciones a_sust ON a_sust.sustituye_a = a_orig.id
-            WHERE a_orig.cuadrante_id = ?
-            AND a_orig.fecha >= ?
-            AND p.fecha_baja IS NOT NULL
-            AND a_sust.es_sustitucion = 1
+            WHERE p.fecha_baja IS NOT NULL
+            AND p.fecha_baja <= ?
+            AND p.activo = 1
+            ORDER BY p.nombre
         ");
-        $stmt->execute([$cuadranteId, $fechaIncorporacion]);
+        $stmt->execute([$cuadrante['fecha_fin']]);
         $personasDeBaja = $stmt->fetchAll();
 
         jsonResponse([
@@ -139,6 +137,7 @@ try {
         }
 
         $cubrirBaja = $data['cubrir_baja'] ?? false;
+        $personaBajaIdRecibido = $data['persona_baja_id'] ?? null;
 
         $db->beginTransaction();
 
@@ -155,6 +154,11 @@ try {
 
             // MODO: CUBRIR BAJA
             if ($cubrirBaja) {
+                // Validar que se haya enviado persona_baja_id
+                if (!$personaBajaIdRecibido) {
+                    throw new Exception('Debes especificar qué persona de baja quieres cubrir');
+                }
+
                 // Obtener cuadrante
                 $stmt = $db->prepare("SELECT * FROM cuadrantes WHERE id = ?");
                 $stmt->execute([$cuadranteId]);
@@ -164,26 +168,19 @@ try {
                     throw new Exception('Cuadrante no encontrado');
                 }
 
-                // Buscar personas de baja en el rango de fechas
-                $stmt = $db->prepare("
-                    SELECT DISTINCT p.id, p.nombre
-                    FROM personas p
-                    INNER JOIN asignaciones a_orig ON a_orig.persona_id = p.id
-                    WHERE a_orig.cuadrante_id = ?
-                    AND a_orig.fecha >= ?
-                    AND a_orig.es_sustitucion = 0
-                    AND p.fecha_baja IS NOT NULL
-                    AND p.fecha_baja <= ?
-                ");
-                $stmt->execute([$cuadranteId, $fechaIncorporacion, $cuadrante['fecha_fin']]);
-                $personasDeBaja = $stmt->fetchAll();
+                // Obtener información de la persona de baja seleccionada
+                $stmt = $db->prepare("SELECT * FROM personas WHERE id = ?");
+                $stmt->execute([$personaBajaIdRecibido]);
+                $personaBaja = $stmt->fetch();
 
-                if (empty($personasDeBaja)) {
-                    throw new Exception('No se encontraron personas de baja para cubrir');
+                if (!$personaBaja) {
+                    throw new Exception('Persona de baja no encontrada');
                 }
 
-                // Tomar la primera persona de baja
-                $personaBaja = $personasDeBaja[0];
+                if ($personaBaja['fecha_baja'] === null) {
+                    throw new Exception('La persona seleccionada no está de baja');
+                }
+
                 $personaBajaId = $personaBaja['id'];
 
                 // Obtener todos los rotadores activos (incluyendo el que se incorpora)
