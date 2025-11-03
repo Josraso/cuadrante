@@ -261,18 +261,19 @@
 
     <!-- Modal para verificar conflictos de baja -->
     <div id="modal-verificar-conflictos" class="modal">
-        <div class="modal-content" style="max-width: 800px;">
+        <div class="modal-content" style="max-width: 900px;">
             <span class="close">&times;</span>
-            <h2>⚠️ Conflicto con Turnos de Tarde</h2>
+            <h2>⚠️ Análisis de Impacto de Baja</h2>
 
-            <div id="conflictos-content">
+            <div id="conflictos-content" style="max-height: 500px; overflow-y: auto;">
                 <!-- Se llenará dinámicamente con JS -->
             </div>
 
-            <div class="modal-actions">
-                <button id="btn-confirmar-baja-sin-cubrir" class="btn btn-secondary">Solo Marcar Baja</button>
-                <button id="btn-confirmar-baja-y-cubrir" class="btn btn-primary">Marcar Baja y Cubrir Semanas</button>
-                <button id="btn-cancelar-conflictos" class="btn btn-secondary">Cancelar</button>
+            <div class="modal-actions" style="flex-wrap: wrap; gap: 10px; justify-content: space-between;">
+                <button id="btn-regenerar-cuadrantes" class="btn btn-primary" style="flex: 1 1 45%;">🔄 Regenerar Cuadrantes Completos</button>
+                <button id="btn-sustituir-criticas" class="btn btn-warning" style="flex: 1 1 45%;">⚠️ Solo Sustituir Semanas Ilegales</button>
+                <button id="btn-marcar-sin-tocar" class="btn btn-secondary" style="flex: 1 1 45%;">✋ Marcar Baja Sin Hacer Nada</button>
+                <button id="btn-cancelar-conflictos" class="btn btn-secondary" style="flex: 1 1 45%;">❌ Cancelar</button>
             </div>
         </div>
     </div>

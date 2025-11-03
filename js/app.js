@@ -407,14 +407,8 @@ async function confirmarBaja(e) {
             return;
         }
 
-        // Si no hay semanas críticas, marcar baja directamente
-        if (data.total_semanas_criticas === 0) {
-            await ejecutarMarcadoBaja(id, fechaBaja);
-            return;
-        }
-
-        // Hay conflictos - mostrar modal de verificación
-        mostrarModalConflictos(id, fechaBaja, data.afectaciones);
+        // Siempre mostrar modal con análisis completo para que el usuario decida
+        mostrarModalConflictos(id, fechaBaja, data);
 
     } catch (error) {
         hideLoading();
@@ -454,108 +448,188 @@ async function ejecutarMarcadoBaja(personaId, fechaBaja) {
     }
 }
 
-function mostrarModalConflictos(personaId, fechaBaja, afectaciones) {
+function mostrarModalConflictos(personaId, fechaBaja, data) {
     const modal = document.getElementById('modal-verificar-conflictos');
     const content = document.getElementById('conflictos-content');
 
+    const { persona, afectaciones, total_semanas_ilegales, total_semanas_con_problemas, total_cuadrantes_afectados } = data;
+
     let html = `
-        <p style="color: #dc3545; font-weight: bold; margin-bottom: 15px;">
-            La baja afecta a ${afectaciones.reduce((sum, a) => sum + a.semanas_criticas.length, 0)} semana(s) CRÍTICA(S)
-            donde solo quedaría 1 persona de tarde (ILEGAL - mínimo 2 requeridos).
-        </p>
+        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+            <h3 style="margin: 0 0 10px 0; color: #495057;">📊 Resumen de Impacto</h3>
+            <p style="margin: 5px 0;"><strong>Persona:</strong> ${persona.nombre}</p>
+            <p style="margin: 5px 0;"><strong>Fecha de baja:</strong> ${formatearFecha(fechaBaja)}</p>
+            <p style="margin: 5px 0;"><strong>Cuadrantes afectados:</strong> ${total_cuadrantes_afectados}</p>
+            ${total_semanas_ilegales > 0 ? `
+                <p style="margin: 5px 0; color: #dc3545; font-weight: bold;">
+                    🔴 ${total_semanas_ilegales} semana(s) ILEGALES (menos de 2 de tarde)
+                </p>
+            ` : ''}
+            ${total_semanas_con_problemas > 0 ? `
+                <p style="margin: 5px 0; color: #ffc107;">
+                    ⚠️ ${total_semanas_con_problemas} semana(s) con ADVERTENCIAS (exactamente 2 de tarde)
+                </p>
+            ` : ''}
+        </div>
     `;
 
     afectaciones.forEach(cuadrante => {
-        if (cuadrante.semanas_criticas.length > 0) {
+        html += `
+            <div style="margin: 20px 0;">
+                <h3 style="color: #667eea; margin-bottom: 10px;">📅 ${cuadrante.cuadrante_nombre}</h3>
+                <small style="color: #6c757d;">${formatearFecha(cuadrante.fecha_inicio)} - ${formatearFecha(cuadrante.fecha_fin)}</small>
+
+                <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px;">
+                    <thead>
+                        <tr style="background: #e9ecef;">
+                            <th style="padding: 8px; text-align: left; border: 1px solid #dee2e6;">Semana</th>
+                            <th style="padding: 8px; text-align: center; border: 1px solid #dee2e6;">Actual<br><small>(M/T)</small></th>
+                            <th style="padding: 8px; text-align: center; border: 1px solid #dee2e6;">Sin Persona<br><small>(M/T)</small></th>
+                            <th style="padding: 8px; text-align: left; border: 1px solid #dee2e6;">Estado</th>
+                            <th style="padding: 8px; text-align: left; border: 1px solid #dee2e6;">Candidatos</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        cuadrante.semanas.forEach(semana => {
+            const bgColor = semana.es_ilegal ? '#fee' : (semana.tiene_problemas ? '#fff9e6' : '#fff');
+            const icon = semana.es_ilegal ? '🔴' : (semana.tiene_problemas ? '⚠️' : '✅');
+
             html += `
-                <h3 style="margin-top: 20px; color: #667eea;">${cuadrante.cuadrante_nombre}</h3>
-                <div style="max-height: 300px; overflow-y: auto;">
+                <tr style="background: ${bgColor};" data-cuadrante="${cuadrante.cuadrante_id}" data-lunes="${semana.lunes}" data-asignaciones='${JSON.stringify(semana.asignaciones.map(a => a.id))}'>
+                    <td style="padding: 8px; border: 1px solid #dee2e6;">
+                        <strong>${formatearFecha(semana.lunes)}</strong><br>
+                        <small style="color: #6c757d;">al ${formatearFecha(semana.viernes)}</small>
+                    </td>
+                    <td style="padding: 8px; text-align: center; border: 1px solid #dee2e6;">
+                        ${semana.distribucion_actual.manana} / ${semana.distribucion_actual.tarde}
+                    </td>
+                    <td style="padding: 8px; text-align: center; border: 1px solid #dee2e6; font-weight: bold;">
+                        ${semana.distribucion_sin_persona.manana} / ${semana.distribucion_sin_persona.tarde}
+                    </td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6;">
+                        ${icon} ${semana.motivo}
+                    </td>
+                    <td style="padding: 8px; border: 1px solid #dee2e6;">
+                        ${semana.candidatos.length > 0 ? `
+                            <small>
+                                ${semana.candidatos.slice(0, 3).map(c =>
+                                    `${c.nombre} (${c.tardes_acumuladas} tardes)`
+                                ).join('<br>')}
+                            </small>
+                        ` : '-'}
+                    </td>
+                </tr>
             `;
+        });
 
-            cuadrante.semanas_criticas.forEach(semana => {
-                html += `
-                    <div style="background: #fee; border-left: 4px solid #dc3545; padding: 10px; margin: 10px 0; border-radius: 4px;">
-                        <label style="display: flex; align-items: center; cursor: pointer;">
-                            <input type="checkbox" class="semana-cubrir"
-                                   data-cuadrante="${cuadrante.cuadrante_id}"
-                                   data-lunes="${semana.lunes}"
-                                   data-asignaciones='${JSON.stringify(semana.asignaciones.map(a => a.id))}'
-                                   data-candidato="${semana.candidatos[0]?.id || ''}"
-                                   checked
-                                   style="margin-right: 10px;">
-                            <div style="flex: 1;">
-                                <strong>Semana ${formatearFecha(semana.lunes)} - ${formatearFecha(semana.viernes)}</strong>
-                                <br>
-                                <span style="color: #dc3545;">${semana.motivo}</span>
-                                ${semana.candidatos.length > 0 ? `
-                                    <br>
-                                    <small>Sugerencia: <strong>${semana.candidatos[0].nombre}</strong> (${semana.candidatos[0].tardes_acumuladas} tardes acumuladas)</small>
-                                ` : ''}
-                            </div>
-                        </label>
-                    </div>
-                `;
-            });
-
-            html += `</div>`;
-        }
+        html += `
+                    </tbody>
+                </table>
+            </div>
+        `;
     });
 
     content.innerHTML = html;
 
     // Event listeners para los botones
-    document.getElementById('btn-confirmar-baja-sin-cubrir').onclick = async () => {
+
+    // OPCIÓN 1: Regenerar cuadrantes completos
+    document.getElementById('btn-regenerar-cuadrantes').onclick = async () => {
+        if (!confirm('¿Regenerar TODOS los cuadrantes afectados? Esto redistribuirá todas las asignaciones desde la fecha de baja SIN incluir a esta persona.')) {
+            return;
+        }
+
         modal.style.display = 'none';
-        await ejecutarMarcadoBaja(personaId, fechaBaja);
-    };
+        showLoading('Regenerando cuadrantes...');
 
-    document.getElementById('btn-confirmar-baja-y-cubrir').onclick = async () => {
-        modal.style.display = 'none';
+        try {
+            // Marcar baja primero
+            await ejecutarMarcadoBaja(personaId, fechaBaja);
 
-        // Obtener semanas seleccionadas
-        const checkboxes = document.querySelectorAll('.semana-cubrir:checked');
-        const sustitucionesAProcesar = [];
+            // Regenerar cada cuadrante afectado usando api/regenerar.php
+            for (const cuadrante of afectaciones) {
+                const primeraSemanaBaja = cuadrante.semanas[0].lunes;
 
-        checkboxes.forEach(checkbox => {
-            const asignaciones = JSON.parse(checkbox.dataset.asignaciones);
-            const candidatoId = checkbox.dataset.candidato;
-
-            if (candidatoId) {
-                sustitucionesAProcesar.push({
-                    asignaciones_ids: asignaciones,
-                    persona_sustituto_id: parseInt(candidatoId)
+                const response = await fetch('api/regenerar.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        cuadrante_id: cuadrante.cuadrante_id,
+                        fecha_desde: primeraSemanaBaja
+                    })
                 });
-            }
-        });
 
-        // Marcar baja y crear sustituciones
-        await ejecutarMarcadoBaja(personaId, fechaBaja);
-
-        if (sustitucionesAProcesar.length > 0) {
-            showLoading('Creando sustituciones...');
-
-            for (const sust of sustitucionesAProcesar) {
-                try {
-                    await fetch('api/sustituir.php', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(sust)
-                    });
-                } catch (error) {
-                    console.error('Error creando sustitución:', error);
+                const result = await response.json();
+                if (!result.success) {
+                    throw new Error(result.message);
                 }
             }
 
             hideLoading();
-            showToast(`Baja marcada y ${sustitucionesAProcesar.length} semana(s) cubiertas`, 'success');
+            showToast('Baja marcada y cuadrantes regenerados correctamente', 'success');
 
-            // Recargar cuadrante para mostrar sustituciones
             if (cuadranteActual) {
                 cargarCuadrante();
             }
+        } catch (error) {
+            hideLoading();
+            showToast('Error al regenerar: ' + error.message, 'error');
         }
     };
 
+    // OPCIÓN 2: Solo sustituir semanas ilegales
+    document.getElementById('btn-sustituir-criticas').onclick = async () => {
+        modal.style.display = 'none';
+        showLoading('Procesando...');
+
+        try {
+            // Marcar baja
+            await ejecutarMarcadoBaja(personaId, fechaBaja);
+
+            // Crear sustituciones solo para semanas ilegales
+            let sustitucionesCreadas = 0;
+
+            for (const cuadrante of afectaciones) {
+                for (const semana of cuadrante.semanas) {
+                    if (semana.es_ilegal && semana.candidatos.length > 0) {
+                        await fetch('api/sustituir.php', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                asignaciones_ids: semana.asignaciones.map(a => a.id),
+                                persona_sustituto_id: semana.candidatos[0].id
+                            })
+                        });
+                        sustitucionesCreadas++;
+                    }
+                }
+            }
+
+            hideLoading();
+            showToast(`Baja marcada y ${sustitucionesCreadas} semana(s) críticas sustituidas`, 'success');
+
+            if (cuadranteActual) {
+                cargarCuadrante();
+            }
+        } catch (error) {
+            hideLoading();
+            showToast('Error: ' + error.message, 'error');
+        }
+    };
+
+    // OPCIÓN 3: Marcar baja sin hacer nada
+    document.getElementById('btn-marcar-sin-tocar').onclick = async () => {
+        if (!confirm('¿Marcar baja SIN regenerar ni sustituir? Las semanas ilegales quedarán sin cubrir.')) {
+            return;
+        }
+
+        modal.style.display = 'none';
+        await ejecutarMarcadoBaja(personaId, fechaBaja);
+    };
+
+    // OPCIÓN 4: Cancelar
     document.getElementById('btn-cancelar-conflictos').onclick = () => {
         modal.style.display = 'none';
     };
