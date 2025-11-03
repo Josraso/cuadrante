@@ -75,13 +75,14 @@ try {
             ], 400);
         }
 
-        // Ajustar fecha_desde al lunes más cercano
-        $lunesDesde = getLunes($fechaDesde);
+        // Usar la fecha exacta proporcionada por el usuario (no ajustar al lunes)
+        $fechaIncorporacion = $fechaDesde;
 
         // Obtener semanas que se mantendrán (antes de fecha_desde)
         $semanasMantenidas = [];
         $currentLunes = getLunes($cuadrante['fecha_inicio']);
-        while ($currentLunes < $lunesDesde) {
+        $lunesIncorporacion = getLunes($fechaIncorporacion);
+        while ($currentLunes < $lunesIncorporacion) {
             $viernes = getViernes($currentLunes);
             $semanasMantenidas[] = [
                 'lunes' => $currentLunes,
@@ -90,9 +91,9 @@ try {
             $currentLunes = date('Y-m-d', strtotime($currentLunes . ' +7 days'));
         }
 
-        // Obtener semanas que se regenerarán (desde fecha_desde hasta fin)
+        // Obtener semanas que se regenerarán (desde semana de incorporación hasta fin)
         $semanasRegeneradas = [];
-        $currentLunes = $lunesDesde;
+        $currentLunes = $lunesIncorporacion;
         while ($currentLunes <= $cuadrante['fecha_fin']) {
             $viernes = getViernes($currentLunes);
             // No pasar del fin del cuadrante
@@ -117,14 +118,14 @@ try {
             AND p.fecha_baja IS NOT NULL
             AND a_sust.es_sustitucion = 1
         ");
-        $stmt->execute([$cuadranteId, $lunesDesde]);
+        $stmt->execute([$cuadranteId, $fechaIncorporacion]);
         $personasDeBaja = $stmt->fetchAll();
 
         jsonResponse([
             'success' => true,
             'cuadrante' => $cuadrante,
             'persona' => $persona,
-            'lunes_desde' => $lunesDesde,
+            'fecha_incorporacion' => $fechaIncorporacion,
             'semanas_mantenidas' => $semanasMantenidas,
             'semanas_regeneradas' => $semanasRegeneradas,
             'total_semanas_afectadas' => count($semanasRegeneradas),
@@ -148,8 +149,9 @@ try {
                 $stmt->execute([$personaId]);
             }
 
-            // Ajustar a lunes
-            $lunesDesde = getLunes($fechaDesde);
+            // Usar la fecha exacta proporcionada por el usuario (no ajustar al lunes)
+            $fechaIncorporacion = $fechaDesde;
+            $lunesIncorporacion = getLunes($fechaIncorporacion);
 
             // MODO: CUBRIR BAJA
             if ($cubrirBaja) {
@@ -173,7 +175,7 @@ try {
                     AND p.fecha_baja IS NOT NULL
                     AND p.fecha_baja <= ?
                 ");
-                $stmt->execute([$cuadranteId, $lunesDesde, $cuadrante['fecha_fin']]);
+                $stmt->execute([$cuadranteId, $fechaIncorporacion, $cuadrante['fecha_fin']]);
                 $personasDeBaja = $stmt->fetchAll();
 
                 if (empty($personasDeBaja)) {
@@ -192,7 +194,7 @@ try {
                     AND fecha >= ?
                     AND es_sustitucion = 0
                 ");
-                $stmt->execute([$personaBajaId, $cuadranteId, $lunesDesde]);
+                $stmt->execute([$personaBajaId, $cuadranteId, $fechaIncorporacion]);
                 $asignacionesOriginales = $stmt->fetchAll();
 
                 $sustitucionesCreadas = 0;
@@ -263,17 +265,17 @@ try {
                     throw new Exception('Cuadrante no encontrado');
                 }
 
-                // 3. Borrar asignaciones desde fecha_desde (incluyendo sustituciones)
+                // 3. Borrar asignaciones desde fecha_incorporacion (incluyendo sustituciones)
                 $stmt = $db->prepare("
                     DELETE FROM asignaciones
                     WHERE cuadrante_id = ?
                     AND fecha >= ?
                 ");
-                $stmt->execute([$cuadranteId, $lunesDesde]);
+                $stmt->execute([$cuadranteId, $fechaIncorporacion]);
                 $asignacionesBorradas = $stmt->rowCount();
 
-                // 4. Calcular cuántas semanas regenerar
-                $fechaInicio = new DateTime($lunesDesde);
+                // 4. Calcular cuántas semanas regenerar desde el lunes de la semana de incorporación
+                $fechaInicio = new DateTime($lunesIncorporacion);
                 $fechaFin = new DateTime($cuadrante['fecha_fin']);
                 $interval = $fechaInicio->diff($fechaFin);
                 $numSemanas = ceil($interval->days / 7) + 1;
@@ -285,7 +287,7 @@ try {
                     AND (fecha_baja IS NULL OR fecha_baja > ?)
                     ORDER BY puede_rotar ASC, nombre
                 ");
-                $stmt->execute([$lunesDesde]);
+                $stmt->execute([$fechaIncorporacion]);
                 $personasActivas = $stmt->fetchAll();
 
                 if (count($personasActivas) < 3) {
@@ -311,7 +313,7 @@ try {
                     AND es_sustitucion = 0
                     ORDER BY fecha DESC
                 ");
-                $stmt->execute([$cuadranteId, $lunesDesde]);
+                $stmt->execute([$cuadranteId, $fechaIncorporacion]);
                 $tardesHistorico = $stmt->fetchAll();
 
                 foreach ($tardesHistorico as $row) {
@@ -342,14 +344,14 @@ try {
                     AND es_sustitucion = 0
                     GROUP BY persona_id
                 ");
-                $stmt->execute([$cuadranteId, $lunesDesde]);
+                $stmt->execute([$cuadranteId, $fechaIncorporacion]);
                 while ($row = $stmt->fetch()) {
                     $contadorLavado[$row['persona_id']] = (int)$row['total'];
                 }
 
                 // 7. GENERAR SEMANAS (CON LÓGICA CORRECTA)
                 $asignacionesNuevas = [];
-                $fechaActual = new DateTime($lunesDesde);
+                $fechaActual = new DateTime($lunesIncorporacion);
                 $personasTardesPorSemana = [];
                 $personaLavadoPorSemana = [];
 
@@ -471,34 +473,37 @@ try {
                     for ($dia = 0; $dia < 5; $dia++) {
                         $fecha = $fechaActual->format('Y-m-d');
 
-                        // TURNO DE MAÑANA - Lavado
-                        $asignacionesNuevas[] = [
-                            'persona_id' => $personaLavado['id'],
-                            'fecha' => $fecha,
-                            'turno' => 'mañana',
-                            'puesto' => 'lavado'
-                        ];
-
-                        // TURNO DE MAÑANA - Pulidos (excluir lavado, máximo 5)
-                        $personasPulido = array_filter($personasMañana, fn($p) => $p['id'] !== $personaLavado['id']);
-                        $personasPulido = array_values($personasPulido);
-                        for ($i = 0; $i < min(count($personasPulido), 5); $i++) {
+                        // Solo generar asignaciones desde la fecha de incorporación en adelante
+                        if ($fecha >= $fechaIncorporacion && $fecha <= $cuadrante['fecha_fin']) {
+                            // TURNO DE MAÑANA - Lavado
                             $asignacionesNuevas[] = [
-                                'persona_id' => $personasPulido[$i]['id'],
+                                'persona_id' => $personaLavado['id'],
                                 'fecha' => $fecha,
                                 'turno' => 'mañana',
-                                'puesto' => 'pulido' . ($i + 1)
+                                'puesto' => 'lavado'
                             ];
-                        }
 
-                        // TURNO DE TARDE - Pulidos
-                        for ($i = 0; $i < count($personasTardes); $i++) {
-                            $asignacionesNuevas[] = [
-                                'persona_id' => $personasTardes[$i]['id'],
-                                'fecha' => $fecha,
-                                'turno' => 'tarde',
-                                'puesto' => 'pulido' . ($i + 1)
-                            ];
+                            // TURNO DE MAÑANA - Pulidos (excluir lavado, máximo 5)
+                            $personasPulido = array_filter($personasMañana, fn($p) => $p['id'] !== $personaLavado['id']);
+                            $personasPulido = array_values($personasPulido);
+                            for ($i = 0; $i < min(count($personasPulido), 5); $i++) {
+                                $asignacionesNuevas[] = [
+                                    'persona_id' => $personasPulido[$i]['id'],
+                                    'fecha' => $fecha,
+                                    'turno' => 'mañana',
+                                    'puesto' => 'pulido' . ($i + 1)
+                                ];
+                            }
+
+                            // TURNO DE TARDE - Pulidos
+                            for ($i = 0; $i < count($personasTardes); $i++) {
+                                $asignacionesNuevas[] = [
+                                    'persona_id' => $personasTardes[$i]['id'],
+                                    'fecha' => $fecha,
+                                    'turno' => 'tarde',
+                                    'puesto' => 'pulido' . ($i + 1)
+                                ];
+                            }
                         }
 
                         $fechaActual->modify('+1 day');
@@ -526,10 +531,11 @@ try {
 
                     jsonResponse([
                         'success' => true,
-                        'message' => "Persona incorporada correctamente. Se regeneraron $numSemanas semana(s) desde " . date('d/m/Y', strtotime($lunesDesde)),
+                        'message' => "Persona incorporada correctamente desde " . date('d/m/Y', strtotime($fechaIncorporacion)) . ". Se regeneraron $numSemanas semana(s).",
                         'asignaciones_borradas' => $asignacionesBorradas,
                         'asignaciones_creadas' => count($asignacionesNuevas),
-                        'semanas_regeneradas' => $numSemanas
+                        'semanas_regeneradas' => $numSemanas,
+                        'fecha_incorporacion' => $fechaIncorporacion
                     ]);
             } // Fin del else (regeneración normal)
 

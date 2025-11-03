@@ -1791,7 +1791,7 @@ function mostrarAnalisisIncorporacion(data) {
         <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
             <h3 style="color: #667eea; margin-bottom: 10px;">Cuadrante: ${data.cuadrante.nombre}</h3>
             <p><strong>Persona:</strong> ${data.persona.nombre}</p>
-            <p><strong>Fecha seleccionada:</strong> ${formatearFecha(data.lunes_desde)} (ajustado al lunes)</p>
+            <p><strong>Fecha de incorporación:</strong> ${formatearFecha(data.fecha_incorporacion)}</p>
             <p><strong>Semanas a regenerar:</strong> ${data.total_semanas_afectadas}</p>
         </div>
     `;
